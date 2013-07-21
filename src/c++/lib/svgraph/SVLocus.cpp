@@ -64,6 +64,11 @@ mergeNode(
     SVLocusNode& fromNode(getNode(fromIndex));
     SVLocusNode& toNode(getNode(toIndex));
 
+#ifdef DEBUG_SVL
+    log_os << "mergeNode BEFORE fromNode: " << fromNode;
+    log_os << "mergeNode BEFORE toNode: " << toNode;
+#endif
+
     if (fromNode.interval.tid != toNode.interval.tid)
     {
         std::ostringstream oss;
@@ -97,8 +102,39 @@ mergeNode(
 #ifdef DEBUG_SVL
         // is this edge between the to and from nodes?
         const bool isToFromEdge(fromNodeEdgeIter.first == toIndex);
-       log_os << "mergeNode: handle fromEdge: " << _index << ":" << fromNodeEdgeIter.first << " isToFromEdge: " << isToFromEdge << "\n";
+
+        log_os << "mergeNode: handle fromEdge: " << _index << ":" << fromNodeEdgeIter.first << " isToFromEdge: " << isToFromEdge << "\n";
 #endif
+
+        // is this a self edge of the from node?
+        const bool isSelfFromEdge(fromNodeEdgeIter.first == fromIndex);
+
+        if(isSelfFromEdge)
+        {
+            // self-edge needs to be handled as a special case:
+
+            // to node could already have a self edge -- check that here:
+            edges_type::iterator toNodeEdgeIter(toNode.edges.find(toIndex));
+            if (toNodeEdgeIter == toNode.edges.end())
+            {
+#ifdef DEBUG_SVL
+                log_os << "mergeNode: toNode does not have self-edge\n";
+                log_os << "mergeNode: toNode add " << _index << ":" << toIndex << "\n";
+#endif
+
+                toNode.edges.insert(std::make_pair(toIndex,fromNodeEdgeIter.second));
+            }
+            else
+            {
+#ifdef DEBUG_SVL
+                log_os << "mergeNode: toNode already has self edge\n";
+#endif
+                // this node does contain a link to the remote node already:
+                toNodeEdgeIter->second.mergeEdge(fromNodeEdgeIter.second);
+            }
+
+            continue;
+        }
 
         // update local edge:
         {
@@ -156,6 +192,10 @@ mergeNode(
             }
         }
     }
+
+#ifdef DEBUG_SVL
+    log_os << "mergeNode AFTER toNode: " << toNode;
+#endif
 
     clearNodeEdges(fromIndex);
 }
@@ -318,9 +358,19 @@ clearNodeEdges(NodeIndexType nodePtr)
 {
     using namespace illumina::common;
 
+#ifdef DEBUG_SVL
+    log_os << "clearNodeEdges from nodeIndex: " << nodePtr << "\n";
+#endif
+
     SVLocusNode& node(getNode(nodePtr));
     BOOST_FOREACH(edges_type::value_type& edgeIter, node)
     {
+
+#ifdef DEBUG_SVL
+        log_os << "clearNodeEdges clearing remote Index: " << edgeIter.first << "\n";
+#endif
+        // skip self edge (otherwise we invalidate iterators in this foreach loop)
+        if(edgeIter.first == nodePtr) continue;
 
         SVLocusNode& remoteNode(getNode(edgeIter.first));
         edges_type& remoteEdges(remoteNode.edges);
@@ -334,6 +384,9 @@ clearNodeEdges(NodeIndexType nodePtr)
             BOOST_THROW_EXCEPTION(LogicException(oss.str()));
         }
 
+#ifdef DEBUG_SVL
+        log_os << "clearNodeEdges remote clearing Index: " << thisRemoteIter->first << "\n";
+#endif
         remoteEdges.erase(thisRemoteIter);
     }
     node.edges.clear();
@@ -355,27 +408,52 @@ eraseNode(const NodeIndexType nodePtr)
 
 #ifdef DEBUG_SVL
     log_os << "eraseNode: " << _index << ":" << nodePtr << " transfer_in: " << _index << ":" << fromPtr << " \n";
+
+    log_os << "eraseNode BEFORE: " << getNode(nodePtr) << "\n";
 #endif
 
     if (fromPtr != nodePtr)
     {
+#ifdef DEBUG_SVL
+        log_os << "eraseNode transfer_in: BEFORE: " << getNode(fromPtr) << "\n";
+#endif
         // reassign fromNode's remote edges before shifting its address:
         //
+        bool isHandleSelfEdge(false);
         SVLocusNode& fromNode(getNode(fromPtr));
         BOOST_FOREACH(edges_type::value_type& edgeIter, fromNode)
         {
+            const bool isSelfEdge(edgeIter.first == fromPtr);
+
+            if(isSelfEdge)
+            {
+                isHandleSelfEdge=true;
+                continue;
+            }
+
             SVLocusNode& remoteNode(getNode(edgeIter.first));
             edges_type& remoteEdges(remoteNode.edges);
             remoteEdges.insert(std::make_pair(nodePtr,getEdge(edgeIter.first,fromPtr)));
             remoteEdges.erase(fromPtr);
         }
 
+        if(isHandleSelfEdge)
+        {
+            fromNode.edges.insert(std::make_pair(nodePtr,getEdge(fromPtr,fromPtr)));
+            fromNode.edges.erase(fromPtr);
+        }
+
         notifyDelete(nodePtr);
         _graph[nodePtr] = _graph[fromPtr];
         notifyAdd(nodePtr);
+
+#ifdef DEBUG_SVL
+        log_os << "eraseNode transfer_in: AFTER: " << getNode(nodePtr) << "\n";
+#endif
     }
     notifyDelete(fromPtr);
     _graph.resize(fromPtr);
+
 }
 
 
@@ -505,7 +583,7 @@ mergeSelfOverlap()
             SVLocusNode& node2(getNode(revNodeIndex2));
 
             // test whether 1 and 2 intersect, if they do, merge this into a self-edge node:
-            if(! node2.interval.isIntersect(node1.interval)) continue;
+            if (! node2.interval.isIntersect(node1.interval)) continue;
             mergeNode(revNodeIndex,revNodeIndex2);
             eraseNode(revNodeIndex);
             break;
